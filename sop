@@ -1,0 +1,382 @@
+#!/bin/bash
+
+REPOFOLDER="/home/repo"
+GITREPO="git@github.com:ricofehr/mvmc"
+OSCONTROLLER="172.16.70.70"
+OSNEUTRON="172.16.70.71"
+OSGLANCE="172.16.70.72"
+OSNOVAS=("172.16.70.75" "172.16.70.76" "172.16.70.77" "172.16.70.78" "172.16.70.79")
+MVMCNODE="172.16.70.60"
+TIMETOREBOOT=120
+
+#list commit
+listtag() {
+  mkdir -p $REPOFOLDER >/dev/null 2>&1
+  if [[ ! -d ${REPOFOLDER}/.git ]]; then
+    pushd "${REPOFOLDER}" > /dev/null
+    git clone $GITREPO . >/dev/null 2>&1
+    popd > /dev/null
+  fi
+
+  pushd "${REPOFOLDER}" > /dev/null
+  git pull --rebase >/dev/null 2>&1
+  git fetch --all -t >/dev/null 2>&1
+  git tag
+  popd > /dev/null
+}
+
+#updatenodes
+updatenodes() {
+  local ret=0
+
+  # update controller
+  ssh -t -t root@${OSCONTROLLER} "[[ ! -e /var/lib/puppet/state/agent_catalog_run.lock ]] && puppet agent -t"
+  (( $? > 2 )) && ret=1
+  ssh -t -t root@${OSNEUTRON} "[[ ! -e /var/lib/puppet/state/agent_catalog_run.lock ]] && puppet agent -t"
+  (( $? > 2 )) && ret=1
+  ssh -t -t root@${OSGLANCE} "[[ ! -e /var/lib/puppet/state/agent_catalog_run.lock ]] && puppet agent -t"
+  (( $? > 2 )) && ret=1
+  for nova in "${OSNOVAS[@]}"; do
+    nmap $nova -p 22 | grep open >/dev/null 2>&1
+    (( $? != 0 )) && continue  
+    ssh -t -t root@${nova} "[[ ! -e /var/lib/puppet/state/agent_catalog_run.lock ]] && puppet agent -t"
+    (( $? > 2 )) && ret=1
+  done
+  ssh -t -t root@${MVMCNODE} "[[ ! -e /var/lib/puppet/state/agent_catalog_run.lock ]] && puppet agent -t"
+  (( $? > 2 )) && ret=1
+  
+  exit $ret
+}
+
+# rebootnode
+rebootnode() {
+  local remote_ip="$1"
+
+  ssh -t -t root@${remote_ip} "reboot"
+  
+  while (( rtries++ < 3 )); do
+    sleep $TIMETOREBOOT
+    ssh root@${remote_ip} "pwd"
+    (( $? == 0 )) && break
+  done
+  
+  (( rtries == 3 )) && echo "Reboot $remote_ip failed" && exit 1
+}
+
+# reboot nova nodes
+rebootcompute() {
+  for nova in "${OSNOVAS[@]}"; do
+    nmap $nova -p 22 | grep open >/dev/null 2>&1
+    (( $? != 0 )) && continue  
+    rebootnode $nova
+  done
+
+  exit 0
+}
+
+# restart controller services
+restartcontroller() {
+  local ret=0
+
+  # restart mysql and apache2 (horizon and keystone endpoin)
+  ssh -t -t root@${OSCONTROLLER} "service mysql restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSCONTROLLER} "service apache2 restart"
+  (( $? != 0 )) && ret=1
+  
+  # restart memcache and rabbit
+  ssh -t -t root@${OSCONTROLLER} "service memcached restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSCONTROLLER} "service rabbitmq-server restart"
+  (( $? != 0 )) && ret=1
+
+  # nova services
+  ssh -t -t root@${OSCONTROLLER} "service nova-api restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSCONTROLLER} "service nova-cert restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSCONTROLLER} "service nova-consoleauth restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSCONTROLLER} "service nova-scheduler restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSCONTROLLER} "service nova-conductor restart"
+  (( $? != 0 )) && ret=1  
+
+  # neutron services
+  ssh -t -t root@${OSCONTROLLER} "service neutron-server restart"
+  (( $? != 0 )) && ret=1
+
+  exit $ret
+}
+
+# restart neutron services
+restartneutron() {
+  local ret=0
+
+  ssh -t -t root@${OSNEUTRON} "service openvswitch-switch restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSNEUTRON} "service neutron-plugin-openvswitch-agent restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSNEUTRON} "service neutron-l3-agent restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSNEUTRON} "service neutron-dhcp-agent restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSNEUTRON} "service neutron-metadata-agent restart"
+  (( $? != 0 )) && ret=1
+
+  exit $ret
+}
+
+# restart glance services
+restartglance() {
+  local ret=0
+
+  ssh -t -t root@${OSGLANCE} "service glance-registry restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSGLANCE} "service glance-api restart"
+  (( $? != 0 )) && ret=1
+
+  exit $ret
+}
+
+# restart compute services
+restartcompute() {
+  local ret=0
+
+  for nova in "${OSNOVAS[@]}"; do
+    nmap $nova -p 22 | grep open >/dev/null 2>&1
+    (( $? != 0 )) && continue  
+    ssh -t -t root@${nova} "service openvswitch-switch restart"
+    (( $? != 0 )) && ret=1
+    ssh -t -t root@${nova} "service nova-compute restart"
+    (( $? != 0 )) && ret=1
+    ssh -t -t root@${nova} "service neutron-plugin-openvswitch-agent restart"
+    (( $? != 0 )) && ret=1
+  done
+  
+  exit $ret
+}
+
+# restart all mvmc services
+restartmvmc() {
+  local ret=0
+
+  restartpuma
+  (( $? != 0 )) && ret=1
+  restartnginx
+  (( $? != 0 )) && ret=1
+  restartgitlab
+  (( $? != 0 )) && ret=1
+  # restart mysql and memcached services
+  ssh -t -t root@${MVMCNODE} "service memcached restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${MVMCNODE} "service mysql restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${MVMCNODE} "service dnsmasq restart"
+  (( $? != 0 )) && ret=1
+
+  return $ret
+}
+
+# update mvmc project on remote mvmc node
+pullmvmc() {
+  tag=""
+  # if 2 parameters, get tag
+  [[ -n "$2" ]] && tag="$2"
+  # execute pull rebase on remote mvmc manager node
+  ssh -t -t modem@${MVMCNODE} "updatemvmc $tag"
+}
+
+# update database schema for rest ror apps
+rakemigrate() {
+  ssh -t -t modem@${MVMCNODE} "RAILS_ENV=production migratemvmc"
+}
+
+# generate ember application.js for mvmc webui
+rebuildember() {
+  ssh -t -t modem@${MVMCNODE} "touch /ror/public/javascripts/config/app.js" 
+  ssh -t -t modem@${MVMCNODE} "rebuildember" 
+}
+
+# restart puma web service
+restartpuma() {
+  ssh -t -t modem@${MVMCNODE} "puma-restart"
+}
+
+# restart gitlab service
+restartgitlab() {
+  ssh -t -t root@${MVMCNODE} "gitlab-ctl restart gitlab-git-http-server"
+  ssh -t -t root@${MVMCNODE} "gitlab-ctl restart redis"
+  ssh -t -t root@${MVMCNODE} "gitlab-ctl restart sidekiq"
+  ssh -t -t root@${MVMCNODE} "gitlab-ctl restart unicorn"
+}
+
+# restart nginx service
+restartnginx() {
+  ssh -t -t root@${MVMCNODE} "gitlab-ctl restart nginx"
+}
+
+# rstart openvpn service
+restartovpn() {
+  ssh -t -t root@${MVMCNODE} "service openvpn restart"
+}
+
+deploycli() {
+  # tag and wkfolder is mandatory
+  [[ -z "$4" ]] && exit 1
+  tag="$2"
+  wkfolder="$4"
+
+  pushd /tmp >/dev/null
+  mkdir mvmc-cli
+  rsync -az ${wkfolder}/client/ mvmc-cli/
+  (( $? != 0 )) && exit 1
+  rm -rf mvmc-cli/.git*
+  rm -f mvmc-cli/install.log
+  tar cvfz mvmc-cli-${tag#v}.tar.gz mvmc-cli
+  (( $? != 0 )) && exit 1
+  mv mvmc-cli-${tag#v}.tar.gz /home/pkgs/cli/
+  (( $? != 0 )) && exit 1
+  rm -rf mvmc-cli*
+  popd >/dev/null  
+}
+
+# make and rsync a mvmc complete backup
+backupmvmc() {
+  local backupname=""
+  local currentdate="$(date +%y%m%d%H%M)"
+
+  # backup mvmc remote node
+  backupname="$(ssh modem@${MVMCNODE} "backupmvmc")"
+  [[ ! $backupname =~ ^mvmc-[0-9]*.tar.gz$ ]] && exit 1
+  rsync -az modem@${MVMCNODE}:/tmp/$backupname /home/backups/mvmc/
+  (( $? != 0 )) && exit 1
+  ssh -t -t modem@${MVMCNODE} "rm -f /tmp/$backupname"
+
+  # backup puppetmaster folder
+  mkdir -p /home/backups/puppet/puppetmaster-$currentdate
+  rsync -az /etc/puppet/ /home/backups/puppet/puppetmaster-${currentdate}/
+  (( $? != 0 )) && exit 1
+  # make archive of puppet folder
+  pushd /home/backups/puppet >/dev/null
+  tar cvfz puppetmaster-${currentdate}.tar.gz puppetmaster-${currentdate}
+  rm -rf puppetmaster-${currentdate}
+  popd >/dev/null
+
+  # ensure that current minute is finished
+  sleep 60
+}
+
+# generate ror documentation
+yardoc() {
+  ssh -t -t modem@${MVMCNODE} "yardoc"
+}
+
+if [[ "$1" = "-c" ]]; then
+  shift
+else
+  debug -e "missing -c parameter"
+fi
+
+case "$1" in
+  listtag)
+    shift
+    listtag
+    ;;
+  updatenodes)
+    shift
+    updatenodes
+    ;;
+  pullmvmc)
+    shift
+    pullmvmc "$@"
+    ;;
+  rakemigrate)
+    shift
+    rakemigrate
+    ;;
+  rebuildember)
+    shift
+    rebuildember
+    ;;
+  restartpuma)
+    shift
+    restartpuma
+    ;;
+  restartgitlab)
+    shift
+    restartgitlab
+    ;;
+  restartnginx)
+    shift
+    restartnginx
+    ;;
+  restartovpn)
+    shift
+    restartovpn
+    ;;
+  rebootcontroller)
+    shift
+    rebootnode $OSCONTROLLER
+    exit 0
+    ;;
+  rebootneutron)
+    shift
+    rebootnode $OSNEUTRON
+    exit 0
+    ;;
+  rebootglance)
+    shift
+    rebootnode $OSGLANCE
+    exit 0
+    ;;
+  rebootcompute)
+    shift
+    rebootcompute
+    ;;
+  rebootmvmc)
+    shift
+    rebootnode $MVMCNODE
+    exit 0
+    ;;
+  restartcontroller)
+    shift
+    restartcontroller
+    ;;
+  restartneutron)
+    shift
+    restartneutron
+    ;;
+  restartglance)
+    shift
+    restartglance
+    ;;
+  restartcompute)
+    shift
+    restartcompute
+    ;;
+  restartmvmc)
+    shift
+    restartmvmc
+    ;;
+  deploycli)
+    shift
+    deploycli "$@"
+    ;;
+  backupmvmc)
+    shift
+    backupmvmc
+    ;;
+  listbackupmvmc)
+    ls /home/backups/mvmc/
+    ;;
+  listbackuppuppet)
+    ls /home/backups/puppet/
+    ;;
+  listbackupgitlab)
+   ls /home/backups/gitlab/
+   ;;
+  yardoc)
+   yardoc
+   ;;
+esac
