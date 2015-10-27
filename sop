@@ -30,19 +30,19 @@ updatenodes() {
   local ret=0
 
   # update controller
-  ssh -t -t root@${OSCONTROLLER} "[[ ! -e /var/lib/puppet/state/agent_catalog_run.lock ]] && puppet agent -t"
+  ssh -t -t root@${OSCONTROLLER} "[[ ! -e /var/lib/puppet/state/agent_catalog_run.lock ]] && puppet agent -t --detailed-exitcodes"
   (( $? > 2 )) && ret=1
-  ssh -t -t root@${OSNEUTRON} "[[ ! -e /var/lib/puppet/state/agent_catalog_run.lock ]] && puppet agent -t"
+  ssh -t -t root@${OSNEUTRON} "[[ ! -e /var/lib/puppet/state/agent_catalog_run.lock ]] && puppet agent -t --detailed-exitcodes"
   (( $? > 2 )) && ret=1
-  ssh -t -t root@${OSGLANCE} "[[ ! -e /var/lib/puppet/state/agent_catalog_run.lock ]] && puppet agent -t"
+  ssh -t -t root@${OSGLANCE} "[[ ! -e /var/lib/puppet/state/agent_catalog_run.lock ]] && puppet agent -t --detailed-exitcodes"
   (( $? > 2 )) && ret=1
   for nova in "${OSNOVAS[@]}"; do
     nmap $nova -p 22 | grep open >/dev/null 2>&1
     (( $? != 0 )) && continue  
-    ssh -t -t root@${nova} "[[ ! -e /var/lib/puppet/state/agent_catalog_run.lock ]] && puppet agent -t"
+    ssh -t -t root@${nova} "[[ ! -e /var/lib/puppet/state/agent_catalog_run.lock ]] && puppet agent -t --detailed-exitcodes"
     (( $? > 2 )) && ret=1
   done
-  ssh -t -t root@${MVMCNODE} "[[ ! -e /var/lib/puppet/state/agent_catalog_run.lock ]] && puppet agent -t"
+  ssh -t -t root@${MVMCNODE} "[[ ! -e /var/lib/puppet/state/agent_catalog_run.lock ]] && puppet agent -t --detailed-exitcodes"
   (( $? > 2 )) && ret=1
   
   exit $ret
@@ -237,6 +237,7 @@ deploycli() {
   (( $? != 0 )) && exit 1
   mv mvmc-cli-${tag#v}.tar.gz /home/pkgs/cli/
   (( $? != 0 )) && exit 1
+  echo "mvmc-cli-${tag#v}.tar.gz" > /home/pkgs/cli/LATEST
   rm -rf mvmc-cli*
   popd >/dev/null  
 }
