@@ -192,6 +192,11 @@ rakemigrate() {
   ssh -t -t modem@${MVMCNODE} "RAILS_ENV=production migratemvmc"
 }
 
+# install new gem librarys (RAILS_ENV is not needed for this case i mean)
+bundleinstall() {
+  ssh -t -t modem@${MVMCNODE} "RAILS_ENV=production bundlemvmc"
+}
+
 # generate ember application.js for mvmc webui
 rebuildember() {
   ssh -t -t modem@${MVMCNODE} "touch /ror/public/javascripts/config/app.js" 
@@ -295,6 +300,10 @@ case "$1" in
   rakemigrate)
     shift
     rakemigrate
+    ;;
+  bundleinstall)
+    shift
+    bundleinstall
     ;;
   rebuildember)
     shift
