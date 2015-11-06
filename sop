@@ -106,7 +106,60 @@ restartcontroller() {
   ssh -t -t root@${OSCONTROLLER} "service neutron-server restart"
   (( $? != 0 )) && ret=1
 
+  # collectd
+  ssh -t -t root@${MVMCNODE} "service collectd restart"
+  (( $? != 0 )) && ret=1
+
   exit $ret
+}
+
+# check service, logs, swap, load, and disk
+checkcontroller() {
+  local ret=0
+
+  # restart mysql and apache2 (horizon and keystone endpoin)
+  ssh -t -t root@${OSCONTROLLER} "service mysql status"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSCONTROLLER} "service apache2 status"
+  (( $? != 0 )) && ret=1
+  
+  # restart memcache and rabbit
+  ssh -t -t root@${OSCONTROLLER} "service memcached status"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSCONTROLLER} "service rabbitmq-server status"
+  (( $? != 0 )) && ret=1
+
+  # nova services
+  ssh -t -t root@${OSCONTROLLER} "service nova-api status"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSCONTROLLER} "service nova-cert status"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSCONTROLLER} "service nova-consoleauth status"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSCONTROLLER} "service nova-scheduler status"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSCONTROLLER} "service nova-conductor status"
+  (( $? != 0 )) && ret=1  
+
+  # neutron services
+  ssh -t -t root@${OSCONTROLLER} "service neutron-server status"
+  (( $? != 0 )) && ret=1
+
+  # collectd
+  ssh -t -t root@${OSCONTROLLER} "service collectd status"
+  (( $? != 0 )) && ret=1
+
+  # check error in log files
+  checklogcontroller
+  (( $? == 0 )) && ret=1
+
+  exit $ret
+}
+
+# check error logs for controller node
+checklogcontroller() {
+  local cmdlog="tail -n 10 /var/log/apache2/*error.log /var/log/cinder/*.log /var/log/keystone/*.log /var/log/neutron/*.log /var/log/nova/*.log /var/log/openvswitch/*.log /var/log/rabbitmq/*.log | grep -v \"==>\" | grep -v WARNING | grep -v INFO | grep -i error"
+  ssh -t -t root@${OSCONTROLLER} "$cmdlog"
 }
 
 # restart neutron services
@@ -123,8 +176,40 @@ restartneutron() {
   (( $? != 0 )) && ret=1
   ssh -t -t root@${OSNEUTRON} "service neutron-metadata-agent restart"
   (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSNEUTRON} "service collectd restart"
+  (( $? != 0 )) && ret=1
 
   exit $ret
+}
+
+# check service, logs, swap, load, and disk
+checkneutron() {
+  local ret=0
+
+  ssh -t -t root@${OSNEUTRON} "service openvswitch-switch status"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSNEUTRON} "service neutron-plugin-openvswitch-agent status"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSNEUTRON} "service neutron-l3-agent status"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSNEUTRON} "service neutron-dhcp-agent status"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSNEUTRON} "service neutron-metadata-agent status"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSNEUTRON} "service collectd restart"
+  (( $? != 0 )) && ret=1
+
+  # check error in log files
+  checklogneutron
+  (( $? == 0 )) && ret=1
+
+  exit $ret
+}
+
+# check error logs for controller node
+checklogneutron() {
+  local cmdlog="tail -n 10 /var/log/apache2/*error.log /var/log/cinder/*.log /var/log/keystone/*.log /var/log/neutron/*.log /var/log/nova/*.log /var/log/openvswitch/*.log /var/log/rabbitmq/*.log | grep -v \"==>\" | grep -v WARNING | grep -v INFO | grep -i error"
+  ssh -t -t root@${OSCONTROLLER} "$cmdlog"
 }
 
 # restart glance services
@@ -134,6 +219,22 @@ restartglance() {
   ssh -t -t root@${OSGLANCE} "service glance-registry restart"
   (( $? != 0 )) && ret=1
   ssh -t -t root@${OSGLANCE} "service glance-api restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSGLANCE} "service collectd restart"
+  (( $? != 0 )) && ret=1
+
+  exit $ret
+}
+
+# check service, logs, swap, load, and disk
+checkglance() {
+  local ret=0
+
+  ssh -t -t root@${OSGLANCE} "service glance-registry status"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSGLANCE} "service glance-api status"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSGLANCE} "service collectd restart"
   (( $? != 0 )) && ret=1
 
   exit $ret
@@ -152,6 +253,28 @@ restartcompute() {
     (( $? != 0 )) && ret=1
     ssh -t -t root@${nova} "service neutron-plugin-openvswitch-agent restart"
     (( $? != 0 )) && ret=1
+    ssh -t -t root@${nova} "service collectd restart"
+    (( $? != 0 )) && ret=1
+  done
+  
+  exit $ret
+}
+
+# check service, logs, swap, load, and disk
+checkcompute() {
+  local ret=0
+
+  for nova in "${OSNOVAS[@]}"; do
+    nmap $nova -p 22 | grep open >/dev/null 2>&1
+    (( $? != 0 )) && continue  
+    ssh -t -t root@${nova} "service openvswitch-switch status"
+    (( $? != 0 )) && ret=1
+    ssh -t -t root@${nova} "service nova-compute status"
+    (( $? != 0 )) && ret=1
+    ssh -t -t root@${nova} "service neutron-plugin-openvswitch-agent status"
+    (( $? != 0 )) && ret=1
+    ssh -t -t root@${nova} "service collectd status"
+    (( $? != 0 )) && ret=1
   done
   
   exit $ret
@@ -167,12 +290,51 @@ restartmvmc() {
   (( $? != 0 )) && ret=1
   restartgitlab
   (( $? != 0 )) && ret=1
+  ssh -t -t root@${MVMCNODE} "service openvpn restart"
+  (( $? != 0 )) && ret=1
   # restart mysql and memcached services
   ssh -t -t root@${MVMCNODE} "service memcached restart"
   (( $? != 0 )) && ret=1
   ssh -t -t root@${MVMCNODE} "service mysql restart"
   (( $? != 0 )) && ret=1
   ssh -t -t root@${MVMCNODE} "service dnsmasq restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${MVMCNODE} "service vsftpd restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${MVMCNODE} "service influxdb restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${MVMCNODE} "service collectd restart"
+  (( $? != 0 )) && ret=1
+
+  return $ret
+}
+
+# check service, logs, swap, load, and disk
+checkmvmc() {
+  local ret=0
+
+  ssh -t -t root@${MVMCNODE} "service openvpn status"
+  (( $? != 0 )) && ret=1
+  ssh -t -t modem@${MVMCNODE} "puma-status"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${MVMCNODE} "gitlab-ctl status nginx"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${MVMCNODE} "gitlab-ctl status gitlab-git-http-server"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${MVMCNODE} "gitlab-ctl status redis"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${MVMCNODE} "gitlab-ctl status sidekiq"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${MVMCNODE} "gitlab-ctl status unicorn"
+  (( $? != 0 )) && ret=1
+  # restart mysql and memcached services
+  ssh -t -t root@${MVMCNODE} "service memcached status"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${MVMCNODE} "service mysql status"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${MVMCNODE} "service dnsmasq status"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${MVMCNODE} "service vsftpd status"
   (( $? != 0 )) && ret=1
 
   return $ret
@@ -292,6 +454,26 @@ case "$1" in
   updatenodes)
     shift
     updatenodes
+    ;;
+  checkcontroller)
+    shift
+    checkcontroller
+    ;;
+  checkneutron)
+    shift
+    checkneutron
+    ;;
+  checkglance)
+    shift
+    checkglance
+    ;;
+  checkcompute)
+    shift
+    checkcompute
+    ;;
+  checkmvmc)
+    shift
+    checkmvmc
     ;;
   pullmvmc)
     shift
