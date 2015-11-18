@@ -1,12 +1,12 @@
 #!/bin/bash
 
 REPOFOLDER="/home/repo"
-GITREPO="git@github.com:ricofehr/mvmc"
+GITREPO="git@github.com:ricofehr/nextdeploy"
 OSCONTROLLER="172.16.70.70"
 OSNEUTRON="172.16.70.71"
 OSGLANCE="172.16.70.72"
 OSNOVAS=("172.16.70.75" "172.16.70.76" "172.16.70.77" "172.16.70.78" "172.16.70.79")
-MVMCNODE="172.16.70.60"
+NEXTDEPLOYNODE="172.16.70.60"
 TIMETOREBOOT=120
 
 #list commit
@@ -42,7 +42,7 @@ updatenodes() {
     ssh -t -t root@${nova} "[[ ! -e /var/lib/puppet/state/agent_catalog_run.lock ]] && puppet agent -t --detailed-exitcodes"
     (( $? > 2 )) && ret=1
   done
-  ssh -t -t root@${MVMCNODE} "[[ ! -e /var/lib/puppet/state/agent_catalog_run.lock ]] && puppet agent -t --detailed-exitcodes"
+  ssh -t -t root@${NEXTDEPLOYNODE} "[[ ! -e /var/lib/puppet/state/agent_catalog_run.lock ]] && puppet agent -t --detailed-exitcodes"
   (( $? > 2 )) && ret=1
   
   exit $ret
@@ -107,7 +107,7 @@ restartcontroller() {
   (( $? != 0 )) && ret=1
 
   # collectd
-  ssh -t -t root@${MVMCNODE} "service collectd restart"
+  ssh -t -t root@${NEXTDEPLOYNODE} "service collectd restart"
   (( $? != 0 )) && ret=1
 
   exit $ret
@@ -280,8 +280,8 @@ checkcompute() {
   exit $ret
 }
 
-# restart all mvmc services
-restartmvmc() {
+# restart all nextdeploy services
+restartnextdeploy() {
   local ret=0
 
   restartpuma
@@ -290,102 +290,102 @@ restartmvmc() {
   (( $? != 0 )) && ret=1
   restartgitlab
   (( $? != 0 )) && ret=1
-  ssh -t -t root@${MVMCNODE} "service openvpn restart"
+  ssh -t -t root@${NEXTDEPLOYNODE} "service openvpn restart"
   (( $? != 0 )) && ret=1
   # restart mysql and memcached services
-  ssh -t -t root@${MVMCNODE} "service memcached restart"
+  ssh -t -t root@${NEXTDEPLOYNODE} "service memcached restart"
   (( $? != 0 )) && ret=1
-  ssh -t -t root@${MVMCNODE} "service mysql restart"
+  ssh -t -t root@${NEXTDEPLOYNODE} "service mysql restart"
   (( $? != 0 )) && ret=1
-  ssh -t -t root@${MVMCNODE} "service dnsmasq restart"
+  ssh -t -t root@${NEXTDEPLOYNODE} "service dnsmasq restart"
   (( $? != 0 )) && ret=1
-  ssh -t -t root@${MVMCNODE} "service vsftpd restart"
+  ssh -t -t root@${NEXTDEPLOYNODE} "service vsftpd restart"
   (( $? != 0 )) && ret=1
-  ssh -t -t root@${MVMCNODE} "service influxdb restart"
+  ssh -t -t root@${NEXTDEPLOYNODE} "service influxdb restart"
   (( $? != 0 )) && ret=1
-  ssh -t -t root@${MVMCNODE} "service collectd restart"
+  ssh -t -t root@${NEXTDEPLOYNODE} "service collectd restart"
   (( $? != 0 )) && ret=1
 
   return $ret
 }
 
 # check service, logs, swap, load, and disk
-checkmvmc() {
+checknextdeploy() {
   local ret=0
 
-  ssh -t -t root@${MVMCNODE} "service openvpn status"
+  ssh -t -t root@${NEXTDEPLOYNODE} "service openvpn status"
   (( $? != 0 )) && ret=1
-  ssh -t -t modem@${MVMCNODE} "puma-status"
+  ssh -t -t modem@${NEXTDEPLOYNODE} "puma-status"
   (( $? != 0 )) && ret=1
-  ssh -t -t root@${MVMCNODE} "gitlab-ctl status nginx"
+  ssh -t -t root@${NEXTDEPLOYNODE} "gitlab-ctl status nginx"
   (( $? != 0 )) && ret=1
-  ssh -t -t root@${MVMCNODE} "gitlab-ctl status gitlab-git-http-server"
+  ssh -t -t root@${NEXTDEPLOYNODE} "gitlab-ctl status gitlab-git-http-server"
   (( $? != 0 )) && ret=1
-  ssh -t -t root@${MVMCNODE} "gitlab-ctl status redis"
+  ssh -t -t root@${NEXTDEPLOYNODE} "gitlab-ctl status redis"
   (( $? != 0 )) && ret=1
-  ssh -t -t root@${MVMCNODE} "gitlab-ctl status sidekiq"
+  ssh -t -t root@${NEXTDEPLOYNODE} "gitlab-ctl status sidekiq"
   (( $? != 0 )) && ret=1
-  ssh -t -t root@${MVMCNODE} "gitlab-ctl status unicorn"
+  ssh -t -t root@${NEXTDEPLOYNODE} "gitlab-ctl status unicorn"
   (( $? != 0 )) && ret=1
   # restart mysql and memcached services
-  ssh -t -t root@${MVMCNODE} "service memcached status"
+  ssh -t -t root@${NEXTDEPLOYNODE} "service memcached status"
   (( $? != 0 )) && ret=1
-  ssh -t -t root@${MVMCNODE} "service mysql status"
+  ssh -t -t root@${NEXTDEPLOYNODE} "service mysql status"
   (( $? != 0 )) && ret=1
-  ssh -t -t root@${MVMCNODE} "service dnsmasq status"
+  ssh -t -t root@${NEXTDEPLOYNODE} "service dnsmasq status"
   (( $? != 0 )) && ret=1
-  ssh -t -t root@${MVMCNODE} "service vsftpd status"
+  ssh -t -t root@${NEXTDEPLOYNODE} "service vsftpd status"
   (( $? != 0 )) && ret=1
 
   return $ret
 }
 
-# update mvmc project on remote mvmc node
-pullmvmc() {
+# update nextdeploy project on remote nextdeploy node
+pullnextdeploy() {
   tag=""
   # if 2 parameters, get tag
   [[ -n "$2" ]] && tag="$2"
-  # execute pull rebase on remote mvmc manager node
-  ssh -t -t modem@${MVMCNODE} "updatemvmc $tag"
+  # execute pull rebase on remote nextdeploy manager node
+  ssh -t -t modem@${NEXTDEPLOYNODE} "updatenextdeploy $tag"
 }
 
 # update database schema for rest ror apps
 rakemigrate() {
-  ssh -t -t modem@${MVMCNODE} "RAILS_ENV=production migratemvmc"
+  ssh -t -t modem@${NEXTDEPLOYNODE} "RAILS_ENV=production migratenextdeploy"
 }
 
 # install new gem librarys (RAILS_ENV is not needed for this case i mean)
 bundleinstall() {
-  ssh -t -t modem@${MVMCNODE} "RAILS_ENV=production bundlemvmc"
+  ssh -t -t modem@${NEXTDEPLOYNODE} "RAILS_ENV=production bundlenextdeploy"
 }
 
-# generate ember application.js for mvmc webui
+# generate ember application.js for nextdeploy webui
 rebuildember() {
-  ssh -t -t modem@${MVMCNODE} "touch /ror/public/javascripts/config/app.js" 
-  ssh -t -t modem@${MVMCNODE} "rebuildember" 
+  ssh -t -t modem@${NEXTDEPLOYNODE} "touch /ror/public/javascripts/config/app.js" 
+  ssh -t -t modem@${NEXTDEPLOYNODE} "rebuildember" 
 }
 
 # restart puma web service
 restartpuma() {
-  ssh -t -t modem@${MVMCNODE} "puma-restart"
+  ssh -t -t modem@${NEXTDEPLOYNODE} "puma-restart"
 }
 
 # restart gitlab service
 restartgitlab() {
-  ssh -t -t root@${MVMCNODE} "gitlab-ctl restart gitlab-git-http-server"
-  ssh -t -t root@${MVMCNODE} "gitlab-ctl restart redis"
-  ssh -t -t root@${MVMCNODE} "gitlab-ctl restart sidekiq"
-  ssh -t -t root@${MVMCNODE} "gitlab-ctl restart unicorn"
+  ssh -t -t root@${NEXTDEPLOYNODE} "gitlab-ctl restart gitlab-git-http-server"
+  ssh -t -t root@${NEXTDEPLOYNODE} "gitlab-ctl restart redis"
+  ssh -t -t root@${NEXTDEPLOYNODE} "gitlab-ctl restart sidekiq"
+  ssh -t -t root@${NEXTDEPLOYNODE} "gitlab-ctl restart unicorn"
 }
 
 # restart nginx service
 restartnginx() {
-  ssh -t -t root@${MVMCNODE} "gitlab-ctl restart nginx"
+  ssh -t -t root@${NEXTDEPLOYNODE} "gitlab-ctl restart nginx"
 }
 
 # rstart openvpn service
 restartovpn() {
-  ssh -t -t root@${MVMCNODE} "service openvpn restart"
+  ssh -t -t root@${NEXTDEPLOYNODE} "service openvpn restart"
 }
 
 deploycli() {
@@ -395,31 +395,31 @@ deploycli() {
   wkfolder="$4"
 
   pushd /tmp >/dev/null
-  mkdir mvmc-cli
-  rsync -az ${wkfolder}/client/ mvmc-cli/
+  mkdir nextdeploy-cli
+  rsync -az ${wkfolder}/client/ nextdeploy-cli/
   (( $? != 0 )) && exit 1
-  rm -rf mvmc-cli/.git*
-  rm -f mvmc-cli/install.log
-  tar cvfz mvmc-cli-${tag#v}.tar.gz mvmc-cli
+  rm -rf nextdeploy-cli/.git*
+  rm -f nextdeploy-cli/install.log
+  tar cvfz nextdeploy-cli-${tag#v}.tar.gz nextdeploy-cli
   (( $? != 0 )) && exit 1
-  mv mvmc-cli-${tag#v}.tar.gz /home/pkgs/cli/
+  mv nextdeploy-cli-${tag#v}.tar.gz /home/pkgs/cli/
   (( $? != 0 )) && exit 1
-  echo "mvmc-cli-${tag#v}.tar.gz" > /home/pkgs/cli/LATEST
-  rm -rf mvmc-cli*
+  echo "nextdeploy-cli-${tag#v}.tar.gz" > /home/pkgs/cli/LATEST
+  rm -rf nextdeploy-cli*
   popd >/dev/null  
 }
 
-# make and rsync a mvmc complete backup
-backupmvmc() {
+# make and rsync a nextdeploy complete backup
+backupnextdeploy() {
   local backupname=""
   local currentdate="$(date +%y%m%d%H%M)"
 
-  # backup mvmc remote node
-  backupname="$(ssh modem@${MVMCNODE} "backupmvmc")"
-  [[ ! $backupname =~ ^mvmc-[0-9]*.tar.gz$ ]] && exit 1
-  rsync -az modem@${MVMCNODE}:/tmp/$backupname /home/backups/mvmc/
+  # backup nextdeploy remote node
+  backupname="$(ssh modem@${NEXTDEPLOYNODE} "backupnextdeploy")"
+  [[ ! $backupname =~ ^nextdeploy-[0-9]*.tar.gz$ ]] && exit 1
+  rsync -az modem@${NEXTDEPLOYNODE}:/tmp/$backupname /home/backups/nextdeploy/
   (( $? != 0 )) && exit 1
-  ssh -t -t modem@${MVMCNODE} "rm -f /tmp/$backupname"
+  ssh -t -t modem@${NEXTDEPLOYNODE} "rm -f /tmp/$backupname"
 
   # backup puppetmaster folder
   mkdir -p /home/backups/puppet/puppetmaster-$currentdate
@@ -437,7 +437,7 @@ backupmvmc() {
 
 # generate ror documentation
 yardoc() {
-  ssh -t -t modem@${MVMCNODE} "yardoc"
+  ssh -t -t modem@${NEXTDEPLOYNODE} "yardoc"
 }
 
 if [[ "$1" = "-c" ]]; then
@@ -471,13 +471,13 @@ case "$1" in
     shift
     checkcompute
     ;;
-  checkmvmc)
+  checknextdeploy)
     shift
-    checkmvmc
+    checknextdeploy
     ;;
-  pullmvmc)
+  pullnextdeploy)
     shift
-    pullmvmc "$@"
+    pullnextdeploy "$@"
     ;;
   rakemigrate)
     shift
@@ -526,9 +526,9 @@ case "$1" in
     shift
     rebootcompute
     ;;
-  rebootmvmc)
+  rebootnextdeploy)
     shift
-    rebootnode $MVMCNODE
+    rebootnode $NEXTDEPLOYNODE
     exit 0
     ;;
   restartcontroller)
@@ -547,20 +547,20 @@ case "$1" in
     shift
     restartcompute
     ;;
-  restartmvmc)
+  restartnextdeploy)
     shift
-    restartmvmc
+    restartnextdeploy
     ;;
   deploycli)
     shift
     deploycli "$@"
     ;;
-  backupmvmc)
+  backupnextdeploy)
     shift
-    backupmvmc
+    backupnextdeploy
     ;;
-  listbackupmvmc)
-    ls /home/backups/mvmc/
+  listbackupnextdeploy)
+    ls /home/backups/nextdeploy/
     ;;
   listbackuppuppet)
     ls /home/backups/puppet/
