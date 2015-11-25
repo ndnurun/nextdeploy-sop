@@ -354,6 +354,11 @@ rakemigrate() {
   ssh -t -t modem@${NEXTDEPLOYNODE} "RAILS_ENV=production migratenextdeploy"
 }
 
+# update rails
+railsupdate() {
+  ssh -t -t modem@${NEXTDEPLOYNODE} "RAILS_ENV=production railsupdate"
+}
+
 # install new gem librarys (RAILS_ENV is not needed for this case i mean)
 bundleinstall() {
   ssh -t -t modem@${NEXTDEPLOYNODE} "RAILS_ENV=production bundlenextdeploy"
@@ -482,6 +487,10 @@ case "$1" in
   rakemigrate)
     shift
     rakemigrate
+    ;;
+  railsupdate)
+    shift
+    railsupdate
     ;;
   bundleinstall)
     shift
