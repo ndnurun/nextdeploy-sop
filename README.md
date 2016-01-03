@@ -17,7 +17,7 @@ Available commands:
 * rebootglance: reboot glance node
 * rebootcompute: reboot compute nodes
 * rebootnextdeploy: restart services into nextdeploy manager node
-* restartcontroller: restart all controller services (keystone, horizon, api, ...) 
+* restartcontroller: restart all controller services (keystone, horizon, api, ...)
 * restartneutron: restart all neutron services
 * restartglance: restart glance services
 * restartcompute: restart all compute services
