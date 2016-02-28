@@ -369,7 +369,6 @@ bundleinstall() {
 
 # generate ember application.js for nextdeploy webui
 rebuildember() {
-  ssh -t -t modem@${NEXTDEPLOYNODE} "touch /ror/public/javascripts/config/app.js"
   ssh -t -t modem@${NEXTDEPLOYNODE} "rebuildember"
 }
 
