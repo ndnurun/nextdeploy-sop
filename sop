@@ -469,6 +469,12 @@ restartgitlab() {
   ssh -t -t root@${NEXTDEPLOYNODE} "gitlab-ctl restart unicorn"
 }
 
+# launch and reconfigure of gitlab
+gitlabreconfigure() {
+  ssh -t -t root@${NEXTDEPLOYNODE} "gitlab-ctl reconfigure"
+  restartgitlab
+}
+
 # restart nginx service
 restartnginx() {
   ssh -t -t root@${NEXTDEPLOYNODE} "gitlab-ctl restart nginx"
@@ -569,6 +575,10 @@ case "$1" in
   checknextdeploy)
     shift
     checknextdeploy
+    ;;
+  gitlabreconfigure)
+    shift
+    gitlabreconfigure
     ;;
   listbackupnextdeploy)
     ls /home/backups/nextdeploy/
