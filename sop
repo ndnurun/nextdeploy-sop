@@ -28,11 +28,11 @@ listtag() {
   popd > /dev/null
 }
 
-#updatenodes
+# updatenodes
 updatenodes() {
   local ret=0
 
-  # update controller
+  # launch agent directly on each nodes
   ssh -t -t root@${OSCONTROLLER} "[[ ! -e /var/lib/puppet/state/agent_catalog_run.lock ]] && puppet agent -t --detailed-exitcodes"
   (( $? > 2 )) && ret=1
   ssh -t -t root@${OSNEUTRON} "[[ ! -e /var/lib/puppet/state/agent_catalog_run.lock ]] && puppet agent -t --detailed-exitcodes"
@@ -49,6 +49,80 @@ updatenodes() {
   (( $? > 2 )) && ret=1
 
   exit $ret
+}
+
+# stop puppet agent on all nodes
+puppetstop() {
+  local ret=0
+
+  ssh -t -t root@${OSCONTROLLER} "service puppet stop"
+  (( $? > 2 )) && ret=1
+  ssh -t -t root@${OSNEUTRON} "service puppet stop"
+  (( $? > 2 )) && ret=1
+  ssh -t -t root@${OSGLANCE} "service puppet stop"
+  (( $? > 2 )) && ret=1
+  for nova in "${OSNOVAS[@]}"; do
+    nmap $nova -p 22 | grep open >/dev/null 2>&1
+    (( $? != 0 )) && continue
+    ssh -t -t root@${nova} "service puppet stop"
+    (( $? > 2 )) && ret=1
+  done
+  ssh -t -t root@${NEXTDEPLOYNODE} "service puppet stop"
+  (( $? > 2 )) && ret=1
+
+  # ensure that no one agent is applying configuration
+  sleep 15
+
+  exit $ret
+}
+
+# start puppet agent on all nodes
+puppetstart() {
+  local ret=0
+
+  ssh -t -t root@${OSCONTROLLER} "service puppet start"
+  (( $? > 2 )) && ret=1
+  ssh -t -t root@${OSNEUTRON} "service puppet start"
+  (( $? > 2 )) && ret=1
+  ssh -t -t root@${OSGLANCE} "service puppet start"
+  (( $? > 2 )) && ret=1
+  for nova in "${OSNOVAS[@]}"; do
+    nmap $nova -p 22 | grep open >/dev/null 2>&1
+    (( $? != 0 )) && continue
+    ssh -t -t root@${nova} "service puppet start"
+    (( $? > 2 )) && ret=1
+  done
+  ssh -t -t root@${NEXTDEPLOYNODE} "service puppet start"
+  (( $? > 2 )) && ret=1
+
+  exit $ret
+}
+
+# maintenance ui
+maintenanceui() {
+  ssh -t -t root@${NEXTDEPLOYNODE} "sed -i 's;#UI;;' /etc/os-maintenance.conf"
+  restartnginx
+}
+
+# maintenance api
+maintenanceapi() {
+  ssh -t -t root@${NEXTDEPLOYNODE} "sed -i 's;#API;;' /etc/os-maintenance.conf"
+  restartnginx
+}
+
+# maintenace vms
+maintenancevms() {
+ ssh -t -t root@${NEXTDEPLOYNODE} "sed -i 's;#VMS;;' /etc/os-maintenance.conf"
+ restartnginx
+}
+
+# maintenance off
+maintenanceoff() {
+  ssh -t -t root@${NEXTDEPLOYNODE} "rm -f /etc/os-maintenance.conf"
+  ssh -t -t root@${NEXTDEPLOYNODE} "puppet agent -t"
+  # if cmd fails, try again after 1min
+  (( $? != 0 )) && sleep 60 && ssh -t -t root@${NEXTDEPLOYNODE} "puppet agent -t"
+  restartnginx
 }
 
 # rebootnode
@@ -237,7 +311,7 @@ checkglance() {
   (( $? != 0 )) && ret=1
   ssh -t -t root@${OSGLANCE} "service glance-api status"
   (( $? != 0 )) && ret=1
-  ssh -t -t root@${OSGLANCE} "service collectd restart"
+  ssh -t -t root@${OSGLANCE} "service collectd status"
   (( $? != 0 )) && ret=1
 
   exit $ret
@@ -377,6 +451,16 @@ restartpuma() {
   ssh -t -t modem@${NEXTDEPLOYNODE} "puma-restart"
 }
 
+# restart memcached on nextdeploy node
+restartmemcached() {
+  local ret=0
+
+  ssh -t -t root@${NEXTDEPLOYNODE} "service memcached restart"
+  (( $? != 0 )) && ret=1
+
+  return $ret
+}
+
 # restart gitlab service
 restartgitlab() {
   ssh -t -t root@${NEXTDEPLOYNODE} "gitlab-ctl restart gitlab-git-http-server"
@@ -454,13 +538,17 @@ else
 fi
 
 case "$1" in
-  listtag)
+  backupnextdeploy)
     shift
-    listtag
+    backupnextdeploy
     ;;
-  updatenodes)
+  bundleinstall)
     shift
-    updatenodes
+    bundleinstall
+    ;;
+  deploycli)
+    shift
+    deploycli "$@"
     ;;
   checkcontroller)
     shift
@@ -482,9 +570,46 @@ case "$1" in
     shift
     checknextdeploy
     ;;
+  listbackupnextdeploy)
+    ls /home/backups/nextdeploy/
+    ;;
+  listbackuppuppet)
+    ls /home/backups/puppet/
+    ;;
+  listbackupgitlab)
+   ls /home/backups/gitlab/
+   ;;
+  listtag)
+    shift
+    listtag
+    ;;
+  maintenanceui)
+    shift
+    maintenanceui
+    ;;
+  maintenanceapi)
+    shift
+    maintenanceapi
+    ;;
+  maintenancevms)
+    shift
+    maintenancevms
+    ;;
+  maintenanceoff)
+    shift
+    maintenanceoff
+    ;;
   pullnextdeploy)
     shift
     pullnextdeploy "$@"
+    ;;
+  puppetstart)
+    shift
+    puppetstart
+    ;;
+  puppetstop)
+    shift
+    puppetstop
     ;;
   rakemigrate)
     shift
@@ -493,10 +618,6 @@ case "$1" in
   railsupdate)
     shift
     railsupdate
-    ;;
-  bundleinstall)
-    shift
-    bundleinstall
     ;;
   rebuildember)
     shift
@@ -509,6 +630,10 @@ case "$1" in
   restartgitlab)
     shift
     restartgitlab
+    ;;
+  restartmemcached)
+    shift
+    restartmemcached
     ;;
   restartnginx)
     shift
@@ -562,23 +687,10 @@ case "$1" in
     shift
     restartnextdeploy
     ;;
-  deploycli)
+  updatenodes)
     shift
-    deploycli "$@"
+    updatenodes
     ;;
-  backupnextdeploy)
-    shift
-    backupnextdeploy
-    ;;
-  listbackupnextdeploy)
-    ls /home/backups/nextdeploy/
-    ;;
-  listbackuppuppet)
-    ls /home/backups/puppet/
-    ;;
-  listbackupgitlab)
-   ls /home/backups/gitlab/
-   ;;
   yardoc)
    yardoc
    ;;
