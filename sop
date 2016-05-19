@@ -118,11 +118,40 @@ maintenancevms() {
 
 # maintenance off
 maintenanceoff() {
+  local ret=0
+  
   ssh -t -t root@${NEXTDEPLOYNODE} "rm -f /etc/os-maintenance.conf"
   ssh -t -t root@${NEXTDEPLOYNODE} "puppet agent -t"
   # if cmd fails, try again after 1min
-  (( $? != 0 )) && sleep 60 && ssh -t -t root@${NEXTDEPLOYNODE} "puppet agent -t"
+  if (( $? != 2 )); then
+    sleep 60
+    ssh -t -t root@${NEXTDEPLOYNODE} "puppet agent -t"
+    (( $? != 2 )) && ret=1
+  fi
   restartnginx
+  exit $ret
+}
+
+# clean ossec databases
+cleanossec() {
+  IFS=$'\t' read -r -a agents <<< "$(sudo /var/ossec/bin/manage_agents -l | grep "os.nextdeploy" | sed "s;^.*ID: ;;" | sed "s;, IP:.*$;;" | sed "s;, Name: ;_;" | tr "\n" "\t" | tr -d "\r")"
+  IFS=$'\t' read -r -a prodnames <<< "$(ssh -t -t root@${NEXTDEPLOYNODE} 'mysql -e "select name from vms where is_prod=1" -B -N s_nextdeploy' | tr "\n" "\t" | tr -d "\r")"
+
+  for ag in ${agents[@]}; do
+    isdelete=1
+    for prodn in ${prodnames[@]}; do
+      [[ "$ag" =~ ${prodn} ]] && isdelete=0
+    done
+
+    if ((isdelete == 1)); then
+      idag="${ag%%_*}"
+      nameag="${ag#*_}"
+      sudo /var/ossec/bin/manage_agents -r $idag
+      sudo rm -f /var/ossec/queue/agent-info/${nameag}-*
+      sudo /etc/init.d/ossec restart
+      sleep 5
+    fi
+  done
 }
 
 # rebootnode
@@ -431,11 +460,6 @@ rakemigrate() {
   ssh -t -t modem@${NEXTDEPLOYNODE} "RAILS_ENV=production migratenextdeploy"
 }
 
-# update rails
-railsupdate() {
-  ssh -t -t modem@${NEXTDEPLOYNODE} "RAILS_ENV=production railsupdate"
-}
-
 # install new gem librarys (RAILS_ENV is not needed for this case i mean)
 bundleinstall() {
   ssh -t -t modem@${NEXTDEPLOYNODE} "RAILS_ENV=production bundlenextdeploy"
@@ -552,10 +576,6 @@ case "$1" in
     shift
     bundleinstall
     ;;
-  deploycli)
-    shift
-    deploycli "$@"
-    ;;
   checkcontroller)
     shift
     checkcontroller
@@ -575,6 +595,14 @@ case "$1" in
   checknextdeploy)
     shift
     checknextdeploy
+    ;;
+  cleanossec)
+    shift
+    cleanossec
+    ;;
+  deploycli)
+    shift
+    deploycli "$@"
     ;;
   gitlabreconfigure)
     shift
@@ -625,33 +653,9 @@ case "$1" in
     shift
     rakemigrate
     ;;
-  railsupdate)
-    shift
-    railsupdate
-    ;;
   rebuildember)
     shift
     rebuildember
-    ;;
-  restartpuma)
-    shift
-    restartpuma
-    ;;
-  restartgitlab)
-    shift
-    restartgitlab
-    ;;
-  restartmemcached)
-    shift
-    restartmemcached
-    ;;
-  restartnginx)
-    shift
-    restartnginx
-    ;;
-  restartovpn)
-    shift
-    restartovpn
     ;;
   rebootcontroller)
     shift
@@ -696,6 +700,26 @@ case "$1" in
   restartnextdeploy)
     shift
     restartnextdeploy
+    ;;
+  restartpuma)
+    shift
+    restartpuma
+    ;;
+  restartgitlab)
+    shift
+    restartgitlab
+    ;;
+  restartmemcached)
+    shift
+    restartmemcached
+    ;;
+  restartnginx)
+    shift
+    restartnginx
+    ;;
+  restartovpn)
+    shift
+    restartovpn
     ;;
   updatenodes)
     shift
