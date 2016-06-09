@@ -556,6 +556,22 @@ backupnextdeploy() {
   sleep 60
 }
 
+# dump controller databases
+backupcontroller() {
+  local backupname=""
+  local currentdate="$(date +%y%m%d%H%M)"
+
+  # ensure folder exists
+  mkdir -p /home/backups/controller
+
+  # backup nextdeploy remote node
+  backupname="$(ssh root@${OSCONTROLLER} "backupcontroller")"
+  [[ ! $backupname =~ ^controller-[0-9]*.tar.gz$ ]] && exit 1
+  rsync -az root@${OSCONTROLLER}:/tmp/$backupname /home/backups/controller/
+  (( $? != 0 )) && exit 1
+  ssh -t -t root@${OSCONTROLLER} "rm -f /tmp/$backupname"
+}
+
 # generate ror documentation
 yardoc() {
   ssh -t -t modem@${NEXTDEPLOYNODE} "yardoc"
@@ -568,6 +584,10 @@ else
 fi
 
 case "$1" in
+  backupcontroller)
+    shift
+    backupcontroller
+    ;;
   backupnextdeploy)
     shift
     backupnextdeploy
