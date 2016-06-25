@@ -467,7 +467,7 @@ bundleinstall() {
 
 # generate ember application.js for nextdeploy webui
 rebuildember() {
-  ssh -t -t modem@${NEXTDEPLOYNODE} "rebuildember"
+  ssh -t -t modem@${NEXTDEPLOYNODE} "rebuildember $1"
 }
 
 # restart puma web service
@@ -675,7 +675,7 @@ case "$1" in
     ;;
   rebuildember)
     shift
-    rebuildember
+    rebuildember "$@"
     ;;
   rebootcontroller)
     shift
