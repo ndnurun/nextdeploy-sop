@@ -119,7 +119,7 @@ maintenancevms() {
 # maintenance off
 maintenanceoff() {
   local ret=0
-  
+
   ssh -t -t root@${NEXTDEPLOYNODE} "rm -f /etc/os-maintenance.conf"
   ssh -t -t root@${NEXTDEPLOYNODE} "puppet agent -t"
   # if cmd fails, try again after 1min
@@ -530,6 +530,27 @@ deploycli() {
   popd >/dev/null
 }
 
+deployclitest() {
+  # tag and wkfolder is mandatory
+  [[ -z "$2" ]] && exit 1
+  tag="$(date +%Y%m%d | tr -d "\n")"
+  wkfolder="$2"
+
+  pushd /tmp >/dev/null
+  mkdir nextdeploy-cli
+  rsync -az ${wkfolder}/ nextdeploy-cli/
+  (( $? != 0 )) && exit 1
+  rm -rf nextdeploy-cli/.git*
+  rm -f nextdeploy-cli/install.log
+  tar cvfz nextdeploy-cli-${tag#v}.tar.gz nextdeploy-cli
+  (( $? != 0 )) && exit 1
+  mv nextdeploy-cli-${tag#v}.tar.gz /home/pkgs/test/
+  (( $? != 0 )) && exit 1
+  echo "nextdeploy-cli-${tag#v}.tar.gz" > /home/pkgs/test/LATEST
+  rm -rf nextdeploy-cli*
+  popd >/dev/null
+}
+
 # make and rsync a nextdeploy complete backup
 backupnextdeploy() {
   local backupname=""
@@ -623,6 +644,10 @@ case "$1" in
   deploycli)
     shift
     deploycli "$@"
+    ;;
+  deployclitest)
+    shift
+    deployclitest "$@"
     ;;
   gitlabreconfigure)
     shift
