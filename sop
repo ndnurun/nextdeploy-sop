@@ -154,6 +154,11 @@ cleanossec() {
   done
 }
 
+# clean grafana tmp images folder
+cleangrafana() {
+  sudo find /var/lib/grafana/png/. -mmin +60 -exec rm -f {} \;
+}
+
 # rebootnode
 rebootnode() {
   local remote_ip="$1"
@@ -636,6 +641,10 @@ case "$1" in
   checknextdeploy)
     shift
     checknextdeploy
+    ;;
+  cleangrafana)
+    shift
+    cleangrafana
     ;;
   cleanossec)
     shift
