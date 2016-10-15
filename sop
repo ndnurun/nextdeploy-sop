@@ -3,223 +3,83 @@
 # Commands used by build, deploy, test and supervise purpose on NextDeploy project (http://nextdeploy.io)
 # @author Eric Fehr (ricofehr@nextdeploy.io, @github: ricofehr)
 
-REPOFOLDER="/home/repo"
+# Default values for openstack management ips, git repository and local folder
+REPOFOLDER="/opt/nextdeploy"
+BACKUPFOLDER="/opt/backups"
 GITREPO="git@github.com:ricofehr/nextdeploy"
-OSCONTROLLER="172.16.70.70"
-OSNEUTRON="172.16.70.71"
-OSGLANCE="172.16.70.72"
-OSNOVAS=("172.16.70.75" "172.16.70.76" "172.16.70.77" "172.16.70.78" "172.16.70.79")
-NEXTDEPLOYNODE="172.16.70.60"
-TIMETOREBOOT=120
+OSCONTROLLER="172.16.170.70"
+OSNEUTRON="172.16.170.71"
+OSGLANCE="172.16.170.72"
+OSNOVAS=("172.16.170.75" "172.16.170.76" "172.16.170.77" "172.16.170.78" "172.16.170.79")
+NEXTDEPLOYNODE="172.16.170.60"
+TIMETOREBOOT=180
 
-#list commit
-listtag() {
-  mkdir -p $REPOFOLDER >/dev/null 2>&1
-  if [[ ! -d ${REPOFOLDER}/.git ]]; then
-    pushd "${REPOFOLDER}" > /dev/null
-    git clone $GITREPO . >/dev/null 2>&1
-    popd > /dev/null
-  fi
+# Can override default values
+[[ -f vars ]] && source ./vars
 
-  pushd "${REPOFOLDER}" > /dev/null
-  git pull --rebase >/dev/null 2>&1
-  git fetch --all -t >/dev/null 2>&1
-  git tag --sort -version:refname
-  popd > /dev/null
+# dump controller databases
+backupcontroller() {
+  local backupname=""
+  local currentdate="$(date +%y%m%d%H%M)"
+
+  # ensure folder exists
+  mkdir -p ${BACKUPFOLDER}/controller
+
+  # backup nextdeploy remote node
+  backupname="$(ssh root@${OSCONTROLLER} "backupcontroller")"
+  [[ ! $backupname =~ ^controller-[0-9]*.tar.gz$ ]] && exit 1
+  rsync -az root@${OSCONTROLLER}:/tmp/$backupname ${BACKUPFOLDER}/controller/
+  (( $? != 0 )) && exit 1
+  ssh -t -t root@${OSCONTROLLER} "rm -f /tmp/$backupname"
 }
 
-# updatenodes
-updatenodes() {
+# make and rsync a nextdeploy complete backup
+backupnextdeploy() {
+  local backupname=""
+  local currentdate="$(date +%y%m%d%H%M)"
+
+  # backup nextdeploy remote node
+  backupname="$(ssh modem@${NEXTDEPLOYNODE} "backupnextdeploy")"
+  [[ ! $backupname =~ ^nextdeploy-[0-9]*.tar.gz$ ]] && exit 1
+  rsync -az modem@${NEXTDEPLOYNODE}:/tmp/$backupname ${BACKUPFOLDER}/nextdeploy/
+  (( $? != 0 )) && exit 1
+  ssh -t -t modem@${NEXTDEPLOYNODE} "rm -f /tmp/$backupname"
+
+  # backup puppetmaster folder
+  mkdir -p ${BACKUPFOLDER}/puppet/puppetmaster-$currentdate
+  rsync -az /etc/puppet/ ${BACKUPFOLDER}/puppet/puppetmaster-${currentdate}/
+  (( $? != 0 )) && exit 1
+  # make archive of puppet folder
+  pushd ${BACKUPFOLDER}/puppet >/dev/null
+  tar cvfz puppetmaster-${currentdate}.tar.gz puppetmaster-${currentdate}
+  rm -rf puppetmaster-${currentdate}
+  popd >/dev/null
+
+  # ensure that current minute is finished
+  sleep 60
+}
+
+# install new gem librarys (RAILS_ENV is not needed for this case i mean)
+bundleinstall() {
+  ssh -t -t modem@${NEXTDEPLOYNODE} "RAILS_ENV=production bundlenextdeploy"
+}
+
+# check service, logs, swap, load, and disk
+checkcompute() {
   local ret=0
 
-  # launch agent directly on each nodes
-  ssh -t -t root@${OSCONTROLLER} "[[ ! -e /var/lib/puppet/state/agent_catalog_run.lock ]] && puppet agent -t --detailed-exitcodes"
-  (( $? > 2 )) && ret=1
-  ssh -t -t root@${OSNEUTRON} "[[ ! -e /var/lib/puppet/state/agent_catalog_run.lock ]] && puppet agent -t --detailed-exitcodes"
-  (( $? > 2 )) && ret=1
-  ssh -t -t root@${OSGLANCE} "[[ ! -e /var/lib/puppet/state/agent_catalog_run.lock ]] && puppet agent -t --detailed-exitcodes"
-  (( $? > 2 )) && ret=1
   for nova in "${OSNOVAS[@]}"; do
     nmap $nova -p 22 | grep open >/dev/null 2>&1
     (( $? != 0 )) && continue
-    ssh -t -t root@${nova} "[[ ! -e /var/lib/puppet/state/agent_catalog_run.lock ]] && puppet agent -t --detailed-exitcodes"
-    (( $? > 2 )) && ret=1
+    ssh -t -t root@${nova} "service openvswitch-switch status"
+    (( $? != 0 )) && ret=1
+    ssh -t -t root@${nova} "service nova-compute status"
+    (( $? != 0 )) && ret=1
+    ssh -t -t root@${nova} "service neutron-plugin-openvswitch-agent status"
+    (( $? != 0 )) && ret=1
+    ssh -t -t root@${nova} "service collectd status"
+    (( $? != 0 )) && ret=1
   done
-  ssh -t -t root@${NEXTDEPLOYNODE} "[[ ! -e /var/lib/puppet/state/agent_catalog_run.lock ]] && puppet agent -t --detailed-exitcodes"
-  (( $? > 2 )) && ret=1
-
-  exit $ret
-}
-
-# stop puppet agent on all nodes
-puppetstop() {
-  local ret=0
-
-  ssh -t -t root@${OSCONTROLLER} "service puppet stop"
-  (( $? > 2 )) && ret=1
-  ssh -t -t root@${OSNEUTRON} "service puppet stop"
-  (( $? > 2 )) && ret=1
-  ssh -t -t root@${OSGLANCE} "service puppet stop"
-  (( $? > 2 )) && ret=1
-  for nova in "${OSNOVAS[@]}"; do
-    nmap $nova -p 22 | grep open >/dev/null 2>&1
-    (( $? != 0 )) && continue
-    ssh -t -t root@${nova} "service puppet stop"
-    (( $? > 2 )) && ret=1
-  done
-  ssh -t -t root@${NEXTDEPLOYNODE} "service puppet stop"
-  (( $? > 2 )) && ret=1
-
-  # ensure that no one agent is applying configuration
-  sleep 15
-
-  exit $ret
-}
-
-# start puppet agent on all nodes
-puppetstart() {
-  local ret=0
-
-  ssh -t -t root@${OSCONTROLLER} "service puppet start"
-  (( $? > 2 )) && ret=1
-  ssh -t -t root@${OSNEUTRON} "service puppet start"
-  (( $? > 2 )) && ret=1
-  ssh -t -t root@${OSGLANCE} "service puppet start"
-  (( $? > 2 )) && ret=1
-  for nova in "${OSNOVAS[@]}"; do
-    nmap $nova -p 22 | grep open >/dev/null 2>&1
-    (( $? != 0 )) && continue
-    ssh -t -t root@${nova} "service puppet start"
-    (( $? > 2 )) && ret=1
-  done
-  ssh -t -t root@${NEXTDEPLOYNODE} "service puppet start"
-  (( $? > 2 )) && ret=1
-
-  exit $ret
-}
-
-# maintenance ui
-maintenanceui() {
-  ssh -t -t root@${NEXTDEPLOYNODE} "sed -i 's;#UI;;' /etc/os-maintenance.conf"
-  restartnginx
-}
-
-# maintenance api
-maintenanceapi() {
-  ssh -t -t root@${NEXTDEPLOYNODE} "sed -i 's;#API;;' /etc/os-maintenance.conf"
-  restartnginx
-}
-
-# maintenace vms
-maintenancevms() {
- ssh -t -t root@${NEXTDEPLOYNODE} "sed -i 's;#VMS;;' /etc/os-maintenance.conf"
- restartnginx
-}
-
-# maintenance off
-maintenanceoff() {
-  local ret=0
-
-  ssh -t -t root@${NEXTDEPLOYNODE} "rm -f /etc/os-maintenance.conf"
-  ssh -t -t root@${NEXTDEPLOYNODE} "puppet agent -t"
-  # if cmd fails, try again after 1min
-  if (( $? != 2 )); then
-    sleep 60
-    ssh -t -t root@${NEXTDEPLOYNODE} "puppet agent -t"
-    (( $? != 2 )) && ret=1
-  fi
-  restartnginx
-  exit $ret
-}
-
-# clean ossec databases
-cleanossec() {
-  IFS=$'\t' read -r -a agents <<< "$(sudo /var/ossec/bin/manage_agents -l | grep "os.nextdeploy" | sed "s;^.*ID: ;;" | sed "s;, IP:.*$;;" | sed "s;, Name: ;_;" | tr "\n" "\t" | tr -d "\r")"
-  IFS=$'\t' read -r -a prodnames <<< "$(ssh -t -t root@${NEXTDEPLOYNODE} 'mysql -e "select name from vms where is_prod=1" -B -N s_nextdeploy' | tr "\n" "\t" | tr -d "\r")"
-
-  for ag in ${agents[@]}; do
-    isdelete=1
-    for prodn in ${prodnames[@]}; do
-      [[ "$ag" =~ ${prodn} ]] && isdelete=0
-    done
-
-    if ((isdelete == 1)); then
-      idag="${ag%%_*}"
-      nameag="${ag#*_}"
-      sudo /var/ossec/bin/manage_agents -r $idag
-      sudo rm -f /var/ossec/queue/agent-info/${nameag}-*
-      sudo /etc/init.d/ossec restart
-      sleep 5
-    fi
-  done
-}
-
-# clean grafana tmp images folder
-cleangrafana() {
-  sudo find /var/lib/grafana/png/. -mmin +60 -exec rm -f {} \;
-}
-
-# rebootnode
-rebootnode() {
-  local remote_ip="$1"
-
-  ssh -t -t root@${remote_ip} "reboot"
-
-  while (( rtries++ < 3 )); do
-    sleep $TIMETOREBOOT
-    ssh root@${remote_ip} "pwd"
-    (( $? == 0 )) && break
-  done
-
-  (( rtries == 3 )) && echo "Reboot $remote_ip failed" && exit 1
-}
-
-# reboot nova nodes
-rebootcompute() {
-  for nova in "${OSNOVAS[@]}"; do
-    nmap $nova -p 22 | grep open >/dev/null 2>&1
-    (( $? != 0 )) && continue
-    rebootnode $nova
-  done
-
-  exit 0
-}
-
-# restart controller services
-restartcontroller() {
-  local ret=0
-
-  # restart mysql and apache2 (horizon and keystone endpoin)
-  ssh -t -t root@${OSCONTROLLER} "service mysql restart"
-  (( $? != 0 )) && ret=1
-  ssh -t -t root@${OSCONTROLLER} "service apache2 restart"
-  (( $? != 0 )) && ret=1
-
-  # restart memcache and rabbit
-  ssh -t -t root@${OSCONTROLLER} "service memcached restart"
-  (( $? != 0 )) && ret=1
-  ssh -t -t root@${OSCONTROLLER} "service rabbitmq-server restart"
-  (( $? != 0 )) && ret=1
-
-  # nova services
-  ssh -t -t root@${OSCONTROLLER} "service nova-api restart"
-  (( $? != 0 )) && ret=1
-  ssh -t -t root@${OSCONTROLLER} "service nova-cert restart"
-  (( $? != 0 )) && ret=1
-  ssh -t -t root@${OSCONTROLLER} "service nova-consoleauth restart"
-  (( $? != 0 )) && ret=1
-  ssh -t -t root@${OSCONTROLLER} "service nova-scheduler restart"
-  (( $? != 0 )) && ret=1
-  ssh -t -t root@${OSCONTROLLER} "service nova-conductor restart"
-  (( $? != 0 )) && ret=1
-
-  # neutron services
-  ssh -t -t root@${OSCONTROLLER} "service neutron-server restart"
-  (( $? != 0 )) && ret=1
-
-  # collectd
-  ssh -t -t root@${NEXTDEPLOYNODE} "service collectd restart"
-  (( $? != 0 )) && ret=1
 
   exit $ret
 }
@@ -267,30 +127,30 @@ checkcontroller() {
   exit $ret
 }
 
+# check service, logs, swap, load, and disk
+checkglance() {
+  local ret=0
+
+  ssh -t -t root@${OSGLANCE} "service glance-registry status"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSGLANCE} "service glance-api status"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSGLANCE} "service collectd status"
+  (( $? != 0 )) && ret=1
+
+  exit $ret
+}
+
 # check error logs for controller node
 checklogcontroller() {
   local cmdlog="tail -n 10 /var/log/apache2/*error.log /var/log/cinder/*.log /var/log/keystone/*.log /var/log/neutron/*.log /var/log/nova/*.log /var/log/openvswitch/*.log /var/log/rabbitmq/*.log | grep -v \"==>\" | grep -v WARNING | grep -v INFO | grep -i error"
   ssh -t -t root@${OSCONTROLLER} "$cmdlog"
 }
 
-# restart neutron services
-restartneutron() {
-  local ret=0
-
-  ssh -t -t root@${OSNEUTRON} "service openvswitch-switch restart"
-  (( $? != 0 )) && ret=1
-  ssh -t -t root@${OSNEUTRON} "service neutron-plugin-openvswitch-agent restart"
-  (( $? != 0 )) && ret=1
-  ssh -t -t root@${OSNEUTRON} "service neutron-l3-agent restart"
-  (( $? != 0 )) && ret=1
-  ssh -t -t root@${OSNEUTRON} "service neutron-dhcp-agent restart"
-  (( $? != 0 )) && ret=1
-  ssh -t -t root@${OSNEUTRON} "service neutron-metadata-agent restart"
-  (( $? != 0 )) && ret=1
-  ssh -t -t root@${OSNEUTRON} "service collectd restart"
-  (( $? != 0 )) && ret=1
-
-  exit $ret
+# check error logs for controller node
+checklogneutron() {
+  local cmdlog="tail -n 10 /var/log/apache2/*error.log /var/log/cinder/*.log /var/log/keystone/*.log /var/log/neutron/*.log /var/log/nova/*.log /var/log/openvswitch/*.log /var/log/rabbitmq/*.log | grep -v \"==>\" | grep -v WARNING | grep -v INFO | grep -i error"
+  ssh -t -t root@${OSCONTROLLER} "$cmdlog"
 }
 
 # check service, logs, swap, load, and disk
@@ -315,109 +175,6 @@ checkneutron() {
   (( $? == 0 )) && ret=1
 
   exit $ret
-}
-
-# check error logs for controller node
-checklogneutron() {
-  local cmdlog="tail -n 10 /var/log/apache2/*error.log /var/log/cinder/*.log /var/log/keystone/*.log /var/log/neutron/*.log /var/log/nova/*.log /var/log/openvswitch/*.log /var/log/rabbitmq/*.log | grep -v \"==>\" | grep -v WARNING | grep -v INFO | grep -i error"
-  ssh -t -t root@${OSCONTROLLER} "$cmdlog"
-}
-
-# restart glance services
-restartglance() {
-  local ret=0
-
-  ssh -t -t root@${OSGLANCE} "service glance-registry restart"
-  (( $? != 0 )) && ret=1
-  ssh -t -t root@${OSGLANCE} "service glance-api restart"
-  (( $? != 0 )) && ret=1
-  ssh -t -t root@${OSGLANCE} "service collectd restart"
-  (( $? != 0 )) && ret=1
-
-  exit $ret
-}
-
-# check service, logs, swap, load, and disk
-checkglance() {
-  local ret=0
-
-  ssh -t -t root@${OSGLANCE} "service glance-registry status"
-  (( $? != 0 )) && ret=1
-  ssh -t -t root@${OSGLANCE} "service glance-api status"
-  (( $? != 0 )) && ret=1
-  ssh -t -t root@${OSGLANCE} "service collectd status"
-  (( $? != 0 )) && ret=1
-
-  exit $ret
-}
-
-# restart compute services
-restartcompute() {
-  local ret=0
-
-  for nova in "${OSNOVAS[@]}"; do
-    nmap $nova -p 22 | grep open >/dev/null 2>&1
-    (( $? != 0 )) && continue
-    ssh -t -t root@${nova} "service openvswitch-switch restart"
-    (( $? != 0 )) && ret=1
-    ssh -t -t root@${nova} "service nova-compute restart"
-    (( $? != 0 )) && ret=1
-    ssh -t -t root@${nova} "service neutron-plugin-openvswitch-agent restart"
-    (( $? != 0 )) && ret=1
-    ssh -t -t root@${nova} "service collectd restart"
-    (( $? != 0 )) && ret=1
-  done
-
-  exit $ret
-}
-
-# check service, logs, swap, load, and disk
-checkcompute() {
-  local ret=0
-
-  for nova in "${OSNOVAS[@]}"; do
-    nmap $nova -p 22 | grep open >/dev/null 2>&1
-    (( $? != 0 )) && continue
-    ssh -t -t root@${nova} "service openvswitch-switch status"
-    (( $? != 0 )) && ret=1
-    ssh -t -t root@${nova} "service nova-compute status"
-    (( $? != 0 )) && ret=1
-    ssh -t -t root@${nova} "service neutron-plugin-openvswitch-agent status"
-    (( $? != 0 )) && ret=1
-    ssh -t -t root@${nova} "service collectd status"
-    (( $? != 0 )) && ret=1
-  done
-
-  exit $ret
-}
-
-# restart all nextdeploy services
-restartnextdeploy() {
-  local ret=0
-
-  restartpuma
-  (( $? != 0 )) && ret=1
-  restartnginx
-  (( $? != 0 )) && ret=1
-  restartgitlab
-  (( $? != 0 )) && ret=1
-  ssh -t -t root@${NEXTDEPLOYNODE} "service openvpn restart"
-  (( $? != 0 )) && ret=1
-  # restart mysql and memcached services
-  ssh -t -t root@${NEXTDEPLOYNODE} "service memcached restart"
-  (( $? != 0 )) && ret=1
-  ssh -t -t root@${NEXTDEPLOYNODE} "service mysql restart"
-  (( $? != 0 )) && ret=1
-  ssh -t -t root@${NEXTDEPLOYNODE} "service dnsmasq restart"
-  (( $? != 0 )) && ret=1
-  ssh -t -t root@${NEXTDEPLOYNODE} "service vsftpd restart"
-  (( $? != 0 )) && ret=1
-  ssh -t -t root@${NEXTDEPLOYNODE} "service influxdb restart"
-  (( $? != 0 )) && ret=1
-  ssh -t -t root@${NEXTDEPLOYNODE} "service collectd restart"
-  (( $? != 0 )) && ret=1
-
-  return $ret
 }
 
 # check service, logs, swap, load, and disk
@@ -451,67 +208,31 @@ checknextdeploy() {
   return $ret
 }
 
-# update nextdeploy project on remote nextdeploy node
-pullnextdeploy() {
-  tag=""
-  # if 2 parameters, get tag
-  [[ -n "$2" ]] && tag="$2"
-  # execute pull rebase on remote nextdeploy manager node
-  ssh -t -t modem@${NEXTDEPLOYNODE} "updatenextdeploy $tag"
+# clean grafana tmp images folder
+cleangrafana() {
+  sudo find /var/lib/grafana/png/. -mmin +60 -exec rm -f {} \;
 }
 
-# update database schema for rest ror apps
-rakemigrate() {
-  ssh -t -t modem@${NEXTDEPLOYNODE} "RAILS_ENV=production migratenextdeploy"
-}
+# clean ossec databases
+cleanossec() {
+  IFS=$'\t' read -r -a agents <<< "$(sudo /var/ossec/bin/manage_agents -l | grep "os.nextdeploy" | sed "s;^.*ID: ;;" | sed "s;, IP:.*$;;" | sed "s;, Name: ;_;" | tr "\n" "\t" | tr -d "\r")"
+  IFS=$'\t' read -r -a prodnames <<< "$(ssh -t -t root@${NEXTDEPLOYNODE} 'mysql -e "select name from vms where is_prod=1" -B -N s_nextdeploy' | tr "\n" "\t" | tr -d "\r")"
 
-# install new gem librarys (RAILS_ENV is not needed for this case i mean)
-bundleinstall() {
-  ssh -t -t modem@${NEXTDEPLOYNODE} "RAILS_ENV=production bundlenextdeploy"
-}
+  for ag in ${agents[@]}; do
+    isdelete=1
+    for prodn in ${prodnames[@]}; do
+      [[ "$ag" =~ ${prodn} ]] && isdelete=0
+    done
 
-# generate ember application.js for nextdeploy webui
-rebuildember() {
-  ssh -t -t modem@${NEXTDEPLOYNODE} "rebuildember $1"
-}
-
-# restart puma web service
-restartpuma() {
-  ssh -t -t modem@${NEXTDEPLOYNODE} "puma-restart"
-}
-
-# restart memcached on nextdeploy node
-restartmemcached() {
-  local ret=0
-
-  ssh -t -t root@${NEXTDEPLOYNODE} "service memcached restart"
-  (( $? != 0 )) && ret=1
-
-  return $ret
-}
-
-# restart gitlab service
-restartgitlab() {
-  ssh -t -t root@${NEXTDEPLOYNODE} "gitlab-ctl restart gitlab-git-http-server"
-  ssh -t -t root@${NEXTDEPLOYNODE} "gitlab-ctl restart redis"
-  ssh -t -t root@${NEXTDEPLOYNODE} "gitlab-ctl restart sidekiq"
-  ssh -t -t root@${NEXTDEPLOYNODE} "gitlab-ctl restart unicorn"
-}
-
-# launch and reconfigure of gitlab
-gitlabreconfigure() {
-  ssh -t -t root@${NEXTDEPLOYNODE} "gitlab-ctl reconfigure"
-  restartgitlab
-}
-
-# restart nginx service
-restartnginx() {
-  ssh -t -t root@${NEXTDEPLOYNODE} "gitlab-ctl restart nginx"
-}
-
-# rstart openvpn service
-restartovpn() {
-  ssh -t -t root@${NEXTDEPLOYNODE} "service openvpn restart"
+    if ((isdelete == 1)); then
+      idag="${ag%%_*}"
+      nameag="${ag#*_}"
+      sudo /var/ossec/bin/manage_agents -r $idag
+      sudo rm -f /var/ossec/queue/agent-info/${nameag}-*
+      sudo /etc/init.d/ossec restart
+      sleep 5
+    fi
+  done
 }
 
 deploycli() {
@@ -556,46 +277,328 @@ deployclitest() {
   popd >/dev/null
 }
 
-# make and rsync a nextdeploy complete backup
-backupnextdeploy() {
-  local backupname=""
-  local currentdate="$(date +%y%m%d%H%M)"
-
-  # backup nextdeploy remote node
-  backupname="$(ssh modem@${NEXTDEPLOYNODE} "backupnextdeploy")"
-  [[ ! $backupname =~ ^nextdeploy-[0-9]*.tar.gz$ ]] && exit 1
-  rsync -az modem@${NEXTDEPLOYNODE}:/tmp/$backupname /home/backups/nextdeploy/
-  (( $? != 0 )) && exit 1
-  ssh -t -t modem@${NEXTDEPLOYNODE} "rm -f /tmp/$backupname"
-
-  # backup puppetmaster folder
-  mkdir -p /home/backups/puppet/puppetmaster-$currentdate
-  rsync -az /etc/puppet/ /home/backups/puppet/puppetmaster-${currentdate}/
-  (( $? != 0 )) && exit 1
-  # make archive of puppet folder
-  pushd /home/backups/puppet >/dev/null
-  tar cvfz puppetmaster-${currentdate}.tar.gz puppetmaster-${currentdate}
-  rm -rf puppetmaster-${currentdate}
-  popd >/dev/null
-
-  # ensure that current minute is finished
-  sleep 60
+# launch and reconfigure of gitlab
+gitlabreconfigure() {
+  ssh -t -t root@${NEXTDEPLOYNODE} "gitlab-ctl reconfigure"
+  restartgitlab
 }
 
-# dump controller databases
-backupcontroller() {
-  local backupname=""
-  local currentdate="$(date +%y%m%d%H%M)"
+#list commit
+listtag() {
+  mkdir -p $REPOFOLDER >/dev/null 2>&1
+  if [[ ! -d ${REPOFOLDER}/.git ]]; then
+    pushd "${REPOFOLDER}" > /dev/null
+    git clone $GITREPO . >/dev/null 2>&1
+    popd > /dev/null
+  fi
 
-  # ensure folder exists
-  mkdir -p /home/backups/controller
+  pushd "${REPOFOLDER}" > /dev/null
+  git pull --rebase >/dev/null 2>&1
+  git fetch --all -t >/dev/null 2>&1
+  git tag --sort -version:refname
+  popd > /dev/null
+}
 
-  # backup nextdeploy remote node
-  backupname="$(ssh root@${OSCONTROLLER} "backupcontroller")"
-  [[ ! $backupname =~ ^controller-[0-9]*.tar.gz$ ]] && exit 1
-  rsync -az root@${OSCONTROLLER}:/tmp/$backupname /home/backups/controller/
-  (( $? != 0 )) && exit 1
-  ssh -t -t root@${OSCONTROLLER} "rm -f /tmp/$backupname"
+# maintenance api
+maintenanceapi() {
+  ssh -t -t root@${NEXTDEPLOYNODE} "sed -i 's;#API;;' /etc/os-maintenance.conf"
+  restartnginx
+}
+
+# maintenance off
+maintenanceoff() {
+  local ret=0
+
+  ssh -t -t root@${NEXTDEPLOYNODE} "rm -f /etc/os-maintenance.conf"
+  ssh -t -t root@${NEXTDEPLOYNODE} "puppet agent -t"
+  # if cmd fails, try again after 1min
+  if (( $? != 2 )); then
+    sleep 60
+    ssh -t -t root@${NEXTDEPLOYNODE} "puppet agent -t"
+    (( $? != 2 )) && ret=1
+  fi
+  restartnginx
+  exit $ret
+}
+
+# maintenace vms
+maintenancevms() {
+ ssh -t -t root@${NEXTDEPLOYNODE} "sed -i 's;#VMS;;' /etc/os-maintenance.conf"
+ restartnginx
+}
+
+# maintenance ui
+maintenanceui() {
+  ssh -t -t root@${NEXTDEPLOYNODE} "sed -i 's;#UI;;' /etc/os-maintenance.conf"
+  restartnginx
+}
+
+# start puppet agent on all nodes
+puppetstart() {
+  local ret=0
+
+  ssh -t -t root@${OSCONTROLLER} "service puppet start"
+  (( $? > 2 )) && ret=1
+  ssh -t -t root@${OSNEUTRON} "service puppet start"
+  (( $? > 2 )) && ret=1
+  ssh -t -t root@${OSGLANCE} "service puppet start"
+  (( $? > 2 )) && ret=1
+  for nova in "${OSNOVAS[@]}"; do
+    nmap $nova -p 22 | grep open >/dev/null 2>&1
+    (( $? != 0 )) && continue
+    ssh -t -t root@${nova} "service puppet start"
+    (( $? > 2 )) && ret=1
+  done
+  ssh -t -t root@${NEXTDEPLOYNODE} "service puppet start"
+  (( $? > 2 )) && ret=1
+
+  exit $ret
+}
+
+# stop puppet agent on all nodes
+puppetstop() {
+  local ret=0
+
+  ssh -t -t root@${OSCONTROLLER} "service puppet stop"
+  (( $? > 2 )) && ret=1
+  ssh -t -t root@${OSNEUTRON} "service puppet stop"
+  (( $? > 2 )) && ret=1
+  ssh -t -t root@${OSGLANCE} "service puppet stop"
+  (( $? > 2 )) && ret=1
+  for nova in "${OSNOVAS[@]}"; do
+    nmap $nova -p 22 | grep open >/dev/null 2>&1
+    (( $? != 0 )) && continue
+    ssh -t -t root@${nova} "service puppet stop"
+    (( $? > 2 )) && ret=1
+  done
+  ssh -t -t root@${NEXTDEPLOYNODE} "service puppet stop"
+  (( $? > 2 )) && ret=1
+
+  # ensure that no one agent is applying configuration
+  sleep 15
+
+  exit $ret
+}
+
+# update nextdeploy project on remote nextdeploy node
+pullnextdeploy() {
+  tag=""
+  # if 2 parameters, get tag
+  [[ -n "$2" ]] && tag="$2"
+  # execute pull rebase on remote nextdeploy manager node
+  ssh -t -t modem@${NEXTDEPLOYNODE} "updatenextdeploy $tag"
+}
+
+# update database schema for rest ror apps
+rakemigrate() {
+  ssh -t -t modem@${NEXTDEPLOYNODE} "RAILS_ENV=production migratenextdeploy"
+}
+
+# reboot nova nodes
+rebootcompute() {
+  for nova in "${OSNOVAS[@]}"; do
+    nmap $nova -p 22 | grep open >/dev/null 2>&1
+    (( $? != 0 )) && continue
+    rebootnode $nova
+  done
+
+  exit 0
+}
+
+# rebootnode
+rebootnode() {
+  local remote_ip="$1"
+
+  ssh -t -t root@${remote_ip} "reboot"
+
+  while (( rtries++ < 3 )); do
+    sleep $TIMETOREBOOT
+    ssh root@${remote_ip} "pwd"
+    (( $? == 0 )) && break
+  done
+
+  (( rtries == 3 )) && echo "Reboot $remote_ip failed" && exit 1
+}
+
+# generate ember application.js for nextdeploy webui
+rebuildember() {
+  ssh -t -t modem@${NEXTDEPLOYNODE} "rebuildember $1"
+}
+
+# restart compute services
+restartcompute() {
+  local ret=0
+
+  for nova in "${OSNOVAS[@]}"; do
+    nmap $nova -p 22 | grep open >/dev/null 2>&1
+    (( $? != 0 )) && continue
+    ssh -t -t root@${nova} "service openvswitch-switch restart"
+    (( $? != 0 )) && ret=1
+    ssh -t -t root@${nova} "service nova-compute restart"
+    (( $? != 0 )) && ret=1
+    ssh -t -t root@${nova} "service neutron-plugin-openvswitch-agent restart"
+    (( $? != 0 )) && ret=1
+    ssh -t -t root@${nova} "service collectd restart"
+    (( $? != 0 )) && ret=1
+  done
+
+  exit $ret
+}
+
+# restart controller services
+restartcontroller() {
+  local ret=0
+
+  # restart mysql and apache2 (horizon and keystone endpoin)
+  ssh -t -t root@${OSCONTROLLER} "service mysql restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSCONTROLLER} "service apache2 restart"
+  (( $? != 0 )) && ret=1
+
+  # restart memcache and rabbit
+  ssh -t -t root@${OSCONTROLLER} "service memcached restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSCONTROLLER} "service rabbitmq-server restart"
+  (( $? != 0 )) && ret=1
+
+  # nova services
+  ssh -t -t root@${OSCONTROLLER} "service nova-api restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSCONTROLLER} "service nova-cert restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSCONTROLLER} "service nova-consoleauth restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSCONTROLLER} "service nova-scheduler restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSCONTROLLER} "service nova-conductor restart"
+  (( $? != 0 )) && ret=1
+
+  # neutron services
+  ssh -t -t root@${OSCONTROLLER} "service neutron-server restart"
+  (( $? != 0 )) && ret=1
+
+  # collectd
+  ssh -t -t root@${NEXTDEPLOYNODE} "service collectd restart"
+  (( $? != 0 )) && ret=1
+
+  exit $ret
+}
+
+# restart gitlab service
+restartgitlab() {
+  ssh -t -t root@${NEXTDEPLOYNODE} "gitlab-ctl restart gitlab-git-http-server"
+  ssh -t -t root@${NEXTDEPLOYNODE} "gitlab-ctl restart redis"
+  ssh -t -t root@${NEXTDEPLOYNODE} "gitlab-ctl restart sidekiq"
+  ssh -t -t root@${NEXTDEPLOYNODE} "gitlab-ctl restart unicorn"
+}
+
+# restart glance services
+restartglance() {
+  local ret=0
+
+  ssh -t -t root@${OSGLANCE} "service glance-registry restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSGLANCE} "service glance-api restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSGLANCE} "service collectd restart"
+  (( $? != 0 )) && ret=1
+
+  exit $ret
+}
+
+# restart memcached on nextdeploy node
+restartmemcached() {
+  local ret=0
+
+  ssh -t -t root@${NEXTDEPLOYNODE} "service memcached restart"
+  (( $? != 0 )) && ret=1
+
+  return $ret
+}
+
+# restart neutron services
+restartneutron() {
+  local ret=0
+
+  ssh -t -t root@${OSNEUTRON} "service openvswitch-switch restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSNEUTRON} "service neutron-plugin-openvswitch-agent restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSNEUTRON} "service neutron-l3-agent restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSNEUTRON} "service neutron-dhcp-agent restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSNEUTRON} "service neutron-metadata-agent restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${OSNEUTRON} "service collectd restart"
+  (( $? != 0 )) && ret=1
+
+  exit $ret
+}
+
+# restart all nextdeploy services
+restartnextdeploy() {
+  local ret=0
+
+  restartpuma
+  (( $? != 0 )) && ret=1
+  restartnginx
+  (( $? != 0 )) && ret=1
+  restartgitlab
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${NEXTDEPLOYNODE} "service openvpn restart"
+  (( $? != 0 )) && ret=1
+  # restart mysql and memcached services
+  ssh -t -t root@${NEXTDEPLOYNODE} "service memcached restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${NEXTDEPLOYNODE} "service mysql restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${NEXTDEPLOYNODE} "service dnsmasq restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${NEXTDEPLOYNODE} "service vsftpd restart"
+  (( $? != 0 )) && ret=1
+  ssh -t -t root@${NEXTDEPLOYNODE} "service collectd restart"
+  (( $? != 0 )) && ret=1
+
+  return $ret
+}
+
+# restart nginx service
+restartnginx() {
+  ssh -t -t root@${NEXTDEPLOYNODE} "gitlab-ctl restart nginx"
+}
+
+# rstart openvpn service
+restartovpn() {
+  ssh -t -t root@${NEXTDEPLOYNODE} "service openvpn restart"
+}
+
+# restart puma web service
+restartpuma() {
+  ssh -t -t modem@${NEXTDEPLOYNODE} "puma-restart"
+}
+
+# updatenodes
+updatenodes() {
+  local ret=0
+
+  # launch agent directly on each nodes
+  ssh -t -t root@${OSCONTROLLER} "[[ ! -e /var/lib/puppet/state/agent_catalog_run.lock ]] && puppet agent -t --detailed-exitcodes"
+  (( $? > 2 )) && ret=1
+  ssh -t -t root@${OSNEUTRON} "[[ ! -e /var/lib/puppet/state/agent_catalog_run.lock ]] && puppet agent -t --detailed-exitcodes"
+  (( $? > 2 )) && ret=1
+  ssh -t -t root@${OSGLANCE} "[[ ! -e /var/lib/puppet/state/agent_catalog_run.lock ]] && puppet agent -t --detailed-exitcodes"
+  (( $? > 2 )) && ret=1
+  for nova in "${OSNOVAS[@]}"; do
+    nmap $nova -p 22 | grep open >/dev/null 2>&1
+    (( $? != 0 )) && continue
+    ssh -t -t root@${nova} "[[ ! -e /var/lib/puppet/state/agent_catalog_run.lock ]] && puppet agent -t --detailed-exitcodes"
+    (( $? > 2 )) && ret=1
+  done
+  ssh -t -t root@${NEXTDEPLOYNODE} "[[ ! -e /var/lib/puppet/state/agent_catalog_run.lock ]] && puppet agent -t --detailed-exitcodes"
+  (( $? > 2 )) && ret=1
+
+  exit $ret
 }
 
 # generate ror documentation
@@ -622,21 +625,21 @@ case "$1" in
     shift
     bundleinstall
     ;;
+  checkcompute)
+    shift
+    checkcompute
+    ;;
   checkcontroller)
     shift
     checkcontroller
-    ;;
-  checkneutron)
-    shift
-    checkneutron
     ;;
   checkglance)
     shift
     checkglance
     ;;
-  checkcompute)
+  checkneutron)
     shift
-    checkcompute
+    checkneutron
     ;;
   checknextdeploy)
     shift
@@ -662,34 +665,34 @@ case "$1" in
     shift
     gitlabreconfigure
     ;;
+  listbackupgitlab)
+    ls ${BACKUPFOLDER}/gitlab/
+    ;;
   listbackupnextdeploy)
-    ls /home/backups/nextdeploy/
+    ls ${BACKUPFOLDER}/nextdeploy/
     ;;
   listbackuppuppet)
-    ls /home/backups/puppet/
+    ls ${BACKUPFOLDER}/puppet/
     ;;
-  listbackupgitlab)
-   ls /home/backups/gitlab/
-   ;;
   listtag)
     shift
     listtag
-    ;;
-  maintenanceui)
-    shift
-    maintenanceui
     ;;
   maintenanceapi)
     shift
     maintenanceapi
     ;;
-  maintenancevms)
-    shift
-    maintenancevms
-    ;;
   maintenanceoff)
     shift
     maintenanceoff
+    ;;
+  maintenanceui)
+    shift
+    maintenanceui
+    ;;
+  maintenancevms)
+    shift
+    maintenancevms
     ;;
   pullnextdeploy)
     shift
@@ -711,14 +714,13 @@ case "$1" in
     shift
     rebuildember "$@"
     ;;
+  rebootcompute)
+    shift
+    rebootcompute
+    ;;
   rebootcontroller)
     shift
     rebootnode $OSCONTROLLER
-    exit 0
-    ;;
-  rebootneutron)
-    shift
-    rebootnode $OSNEUTRON
     exit 0
     ;;
   rebootglance)
@@ -726,46 +728,43 @@ case "$1" in
     rebootnode $OSGLANCE
     exit 0
     ;;
-  rebootcompute)
+  rebootneutron)
     shift
-    rebootcompute
+    rebootnode $OSNEUTRON
+    exit 0
     ;;
   rebootnextdeploy)
     shift
     rebootnode $NEXTDEPLOYNODE
     exit 0
     ;;
-  restartcontroller)
-    shift
-    restartcontroller
-    ;;
-  restartneutron)
-    shift
-    restartneutron
-    ;;
-  restartglance)
-    shift
-    restartglance
-    ;;
   restartcompute)
     shift
     restartcompute
     ;;
-  restartnextdeploy)
+  restartcontroller)
     shift
-    restartnextdeploy
-    ;;
-  restartpuma)
-    shift
-    restartpuma
+    restartcontroller
     ;;
   restartgitlab)
     shift
     restartgitlab
     ;;
+  restartglance)
+    shift
+    restartglance
+    ;;
   restartmemcached)
     shift
     restartmemcached
+    ;;
+  restartneutron)
+    shift
+    restartneutron
+    ;;
+  restartnextdeploy)
+    shift
+    restartnextdeploy
     ;;
   restartnginx)
     shift
@@ -774,6 +773,10 @@ case "$1" in
   restartovpn)
     shift
     restartovpn
+    ;;
+  restartpuma)
+    shift
+    restartpuma
     ;;
   updatenodes)
     shift
